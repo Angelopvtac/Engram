@@ -1,16 +1,19 @@
-# Engram
+<p align="center">
+  <img src="assets/banner.png" alt="Engram — Production Agent Memory Infrastructure" width="100%" />
+</p>
 
-Production agent memory infrastructure with 3-tier memory, selective recall, and policy-driven forgetting. Backed by SQLite via better-sqlite3. TypeScript, ESM, strict mode.
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#quick-start">Quick Start</a> &middot;
+  <a href="#use-cases">Use Cases</a> &middot;
+  <a href="#core-features">Core Features</a> &middot;
+  <a href="#cli">CLI</a> &middot;
+  <a href="docs/">Docs</a>
+</p>
 
-## Features
+---
 
-- **3-tier memory model** -- working (ephemeral key-value with TTL), episodic (past interactions and events), semantic (learned facts and patterns)
-- **RecallEngine** -- keyword search across all tiers with relevance/recency/confidence/frequency scoring and token budget constraints
-- **ForgettingEngine** -- 5 policy types: time-based, confidence-based, access-based, explicit, and GDPR right-to-erasure
-- **IntegrityGuard** -- write rate limiting, contradiction detection, quarantine with release workflow
-- **SharingManager** -- cross-agent memory sharing with private/team/public visibility controls
-- **Full audit logging** -- every store, delete, demote, share, revoke, and quarantine action is logged
-- **CLI** -- `engram init`, `store`, `recall`, `forget`, `stats` commands
+Engram gives AI agents a real memory system. Instead of losing context between conversations or stuffing everything into a prompt, agents get structured, queryable memory that persists, decays naturally, and stays compliant.
 
 ## Install
 
@@ -18,238 +21,122 @@ Production agent memory infrastructure with 3-tier memory, selective recall, and
 npm install engram
 ```
 
-## Quick Start -- Library API
+## Quick Start
 
 ```typescript
 import { MemoryStore, RecallEngine, ForgettingEngine } from 'engram';
 
-const store = new MemoryStore('.engram/memory.db');
+const store = new MemoryStore('~/.engram/memory.db');
 
-// Working memory -- ephemeral key-value with TTL
+// Store a short-lived note (working memory)
 store.working.set('agent-1', 'current-task', 'reviewing PR #42', 300_000);
-const entry = store.working.get('agent-1', 'current-task');
 
-// Episodic memory -- record a past interaction
-const episode = store.episodic.store('agent-1', {
-  who: 'user',
-  what: 'Asked about deployment status',
-  context: 'slack channel',
-  outcome: 'Provided ETA',
-  timestamp: Date.now(),
-  visibility: 'private',
-  expiresAt: null,
-  metadata: {}
+// Record something that happened (episodic memory)
+store.episodic.store('agent-1', {
+  who: 'user', what: 'Asked about deployment status',
+  context: 'slack channel', outcome: 'Provided ETA',
+  timestamp: Date.now(), visibility: 'private',
+  expiresAt: null, metadata: {}
 });
 
-// Semantic memory -- store a learned fact
-const fact = store.semantic.store('agent-1', {
+// Learn a fact (semantic memory)
+store.semantic.store('agent-1', {
   fact: 'Production deploys happen on Tuesdays',
-  topic: 'deployment',
-  confidence: 0.9,
-  sourceEpisodeIds: [episode.id],
-  visibility: 'private',
-  metadata: {}
+  topic: 'deployment', confidence: 0.9,
+  sourceEpisodeIds: [], visibility: 'private', metadata: {}
 });
 
-// Recall -- search across all tiers
-const engine = new RecallEngine(store);
-const results = engine.recall('deployment', { agentId: 'agent-1' });
+// Search across everything
+const recall = new RecallEngine(store);
+const results = recall.recall('deployment', { agentId: 'agent-1' });
 
-// Forgetting -- run a cleanup policy
+// Clean up old memories automatically
 const forgetter = new ForgettingEngine(store);
-forgetter.execute({
-  name: 'cleanup',
-  type: 'access_based',
-  inactiveDays: 30
-}, 'agent-1');
+forgetter.execute({ name: 'cleanup', type: 'access_based', inactiveDays: 30 });
 
 store.close();
 ```
 
-## API Reference
+## Use Cases
 
-### MemoryStore
+**Persistent agent context** -- Agents remember what happened in previous sessions without re-ingesting entire conversation histories. Working memory holds the current task; episodic memory captures what happened; semantic memory stores what was learned.
 
-```typescript
-new MemoryStore(dbPath: string)
-```
+**Multi-agent collaboration** -- Teams of agents share relevant memories through visibility controls. One agent learns a fact, others on the same team can query it. Private memories stay private.
 
-Creates or opens a SQLite database at `dbPath`. Initializes schema in WAL mode with foreign keys enabled.
+**GDPR-compliant data handling** -- When a user requests data erasure, one command purges their information from all memory tiers, quarantine, and audit logs. The audit trail itself is scrubbed of PII.
 
-**Working memory** (`.working`):
+**Memory quality control** -- The integrity guard catches poisoned or contradictory writes before they enter the store. Suspicious memories are quarantined for review, not silently accepted.
 
-| Method | Signature | Description |
-|---|---|---|
-| `set` | `(agentId, key, value, ttlMs) => void` | Store a key-value pair with TTL in milliseconds |
-| `get` | `(agentId, key) => WorkingEntry \| null` | Get by key. Returns null if expired or missing |
-| `delete` | `(agentId, key) => boolean` | Delete a specific key |
-| `clear` | `(agentId) => number` | Clear all working memory for an agent. Returns count deleted |
-| `list` | `(agentId) => WorkingEntry[]` | List all active (non-expired) entries |
+**Context window management** -- Recall engine ranks memories by relevance, recency, confidence, and access frequency, then fits results within a token budget. Agents get the most useful context without blowing their prompt limit.
 
-**Episodic memory** (`.episodic`):
+**Automatic memory decay** -- Forgetting policies handle the cleanup that agents shouldn't have to think about: expire stale data, demote low-confidence facts, delete memories nobody accesses.
 
-| Method | Signature | Description |
-|---|---|---|
-| `store` | `(agentId, episode) => Episode` | Store an episode. Auto-generates ID and timestamps |
-| `get` | `(id) => Episode \| null` | Get by ID. Increments access count |
-| `search` | `(query, options?) => Episode[]` | Keyword search across who/what/context/outcome |
-| `delete` | `(id) => boolean` | Delete by ID |
+## Core Features
 
-Search options: `agentId`, `timeRange: { start, end }`, `limit` (default 50), `visibility`.
+### 3-Tier Memory Model
 
-**Semantic memory** (`.semantic`):
+Memories are organized into three tiers that mirror how humans process information:
 
-| Method | Signature | Description |
-|---|---|---|
-| `store` | `(agentId, fact) => SemanticFact` | Store a fact. Auto-generates ID and timestamps |
-| `get` | `(id) => SemanticFact \| null` | Get by ID. Increments access count |
-| `query` | `(topic, options?) => SemanticFact[]` | Query by topic/fact keyword match |
-| `update` | `(id, updates) => SemanticFact \| null` | Update fact, confidence, topic, visibility, or metadata |
-| `delete` | `(id) => boolean` | Delete by ID |
-
-Query options: `agentId`, `minConfidence`, `limit` (default 50), `visibility`.
-
-**Store-level methods**:
-
-| Method | Signature | Description |
-|---|---|---|
-| `audit` | `(entry) => void` | Write an audit log entry (id and timestamp auto-generated) |
-| `stats` | `(agentId?) => MemoryStats` | Get counts and sizes per tier, plus quarantine and audit totals |
-| `close` | `() => void` | Close the database connection |
-
-### RecallEngine
-
-```typescript
-new RecallEngine(store: MemoryStore, opts?: { recencyHalfLifeMs?: number })
-```
-
-Default recency half-life: 7 days. Memories decay exponentially -- a memory accessed 7 days ago scores 0.5 for recency.
-
-```typescript
-engine.recall(query: string, filters?: RecallFilters): RecallResult
-```
-
-Searches all specified tiers, scores each candidate on relevance, recency, confidence, and frequency, then returns results ranked by composite score within the token budget.
-
-**RecallFilters**:
-
-| Field | Type | Default | Description |
+| Tier | What it stores | Lifespan | Example |
 |---|---|---|---|
-| `tiers` | `MemoryTier[]` | All three | Which tiers to search |
-| `timeRange` | `{ start, end }` | -- | Filter episodic memories by timestamp range |
-| `agentId` | `string` | -- | Filter to a specific agent |
-| `minConfidence` | `number` | -- | Minimum confidence for semantic results |
-| `maxResults` | `number` | 20 | Maximum number of results |
-| `maxTokens` | `number` | Infinity | Token budget (estimated at ~4 chars/token) |
+| **Working** | Current task state, scratch data | Minutes to hours (TTL-based) | `current-task: reviewing PR #42` |
+| **Episodic** | Records of past events and interactions | Days to months | "User asked about billing on March 3" |
+| **Semantic** | Learned facts, patterns, preferences | Long-term, confidence-scored | "Deploys happen on Tuesdays (90% confidence)" |
 
-**RecallResult**: `{ memories: Memory[], totalTokens: number, query: string, filters: RecallFilters }`
+All tiers live in a single SQLite database (WAL mode). No external services required.
 
-### ForgettingEngine
+### Selective Recall
 
-```typescript
-new ForgettingEngine(store: MemoryStore)
-```
+The `RecallEngine` searches across tiers using keyword matching and ranks results with a composite score:
 
-| Method | Signature | Description |
-|---|---|---|
-| `execute` | `(policy, agentId?) => ForgettingReport` | Run a single forgetting policy |
-| `executeAll` | `(policies[], agentId?) => ForgettingReport[]` | Run multiple policies in sequence |
+- **Relevance** -- how well the memory matches the query
+- **Recency** -- exponential decay with a configurable half-life (default: 7 days)
+- **Confidence** -- for semantic facts, how sure we are it's true
+- **Frequency** -- how often the memory has been accessed
 
-**Policy types**:
+Set a token budget and Engram returns the best memories that fit.
 
-| Type | Key Fields | Behavior |
-|---|---|---|
-| `time_based` | `ttl: { working?, episodic?, semantic? }` | Delete memories older than their tier's TTL (in ms) |
-| `confidence_based` | `confidenceThreshold` (default 0.3) | Below threshold: demote semantic to episodic. Below half threshold: delete |
-| `access_based` | `inactiveDays` (default 30) | Delete inactive episodic memories. Demote inactive semantic to episodic |
-| `explicit` | `target` | Delete all episodic/semantic memories matching target string |
-| `gdpr` | `target` | Same as explicit, plus purges working memory and quarantine entries |
+### Policy-Driven Forgetting
 
-**ForgettingReport**: `{ policy, deleted, demoted, retained, reasons: ForgettingReason[], executedAt }`
+Five forgetting strategies, run on-demand or on a schedule:
 
-### IntegrityGuard
+| Policy | What it does |
+|---|---|
+| **Time-based** | Delete memories older than a TTL per tier |
+| **Confidence-based** | Demote shaky facts to episodic; delete very low confidence |
+| **Access-based** | Prune memories nobody has looked at in N days |
+| **Explicit** | Delete everything matching a target string |
+| **GDPR** | Full right-to-erasure: purges all tiers, quarantine, and audit logs |
 
-```typescript
-new IntegrityGuard(store: MemoryStore, opts?: {
-  maxWritesPerWindow?: number,  // default 50
-  windowMs?: number             // default 60000 (1 minute)
-})
-```
+### Integrity Guard
 
-| Method | Signature | Description |
-|---|---|---|
-| `validate` | `(memory: Memory) => IntegrityResult` | Validate a memory write. Quarantines if blocked |
-| `getQuarantined` | `(agentId?) => QuarantinedEntry[]` | List quarantined memories |
-| `releaseFromQuarantine` | `(quarantineId) => boolean` | Release (approve) a quarantined memory |
+Validates writes before they hit the store:
 
-**IntegrityResult**: `{ valid: boolean, warnings: string[], blockedReason: string | null }`
+- **Rate limiting** -- flags sudden write bursts (possible memory poisoning)
+- **Contradiction detection** -- catches new facts that conflict with existing knowledge
+- **Content validation** -- rejects empty or oversized entries
+- Suspicious writes are **quarantined**, not silently dropped. Review and release them when ready.
 
-Checks performed:
-- **Write rate limiting** -- warns above `maxWritesPerWindow`, blocks above 2x that threshold
-- **Contradiction detection** -- flags semantic facts with high word overlap but differing content (especially negation)
-- **Content validation** -- warns on empty or excessively large (>100K char) episodic content
+### Cross-Agent Sharing
 
-### SharingManager
+Memories have three visibility levels: `private`, `team`, and `public`. Working memory is always private. Episodic and semantic memories can be shared across agents on the same team or made globally visible.
 
-```typescript
-new SharingManager(store: MemoryStore)
-```
+### Audit Logging
 
-| Method | Signature | Description |
-|---|---|---|
-| `configure` | `(config: SharingConfig) => void` | Set agent sharing defaults (team ID, default visibility per tier) |
-| `getConfig` | `(agentId) => SharingConfig \| null` | Get agent's sharing config |
-| `share` | `(memoryId, tier, visibility) => boolean` | Set visibility. Returns false for working memory (always private) |
-| `revoke` | `(memoryId, tier) => boolean` | Set back to private |
-| `getTeamMemories` | `(teamId) => { episodic, semantic }` | Get team/public-visible memories for all agents in a team |
-| `getPublicMemories` | `() => { episodic, semantic }` | Get all public-visibility memories across all agents |
-
-Working memory cannot be shared -- `share()` returns `false` for the working tier.
+Every memory operation is logged: stores, deletes, demotions, shares, revocations, quarantines. GDPR erasure scrubs audit entries too, leaving only an anonymized completion record.
 
 ## CLI
 
-Global options: `--db <path>` (default `.engram/memory.db`), `--agent <id>` (default `default`).
-
 ```bash
-# Initialize a memory store
-engram init --agent my-agent --team my-team
-
-# Store memories
-engram store working "current task" --key task --ttl 300000
-engram store episodic "User asked about billing" --who user --context chat
-engram store semantic "Billing issues peak on Mondays" --topic billing --confidence 0.85
-
-# Recall
-engram recall "billing" --tiers episodic,semantic --max-results 5
-
-# Forget
-engram forget --policy time_based --ttl-working 300000 --ttl-episodic 604800000
+engram init --agent my-agent
+engram store episodic "User reported billing bug" --who user --context support
+engram store semantic "Billing bugs peak on Mondays" --topic billing --confidence 0.85
+engram recall "billing issues" --tiers episodic,semantic
 engram forget --policy gdpr --target "user@example.com"
-
-# Stats
 engram stats
 ```
 
-### CLI Commands
-
-**`engram init`** -- Initialize a memory store. Use `--team <id>` to associate the agent with a team.
-
-**`engram store <tier> <content>`** -- Store a memory. Tier is `working`, `episodic`, or `semantic`.
-- Working: `--key <key>` (auto-generated if omitted), `--ttl <ms>` (default 300000)
-- Episodic: `--who <who>` (default "system"), `--context <ctx>`, `--outcome <outcome>`, `--visibility <v>`
-- Semantic: `--topic <topic>` (default "general"), `--confidence <n>` (default 1.0), `--visibility <v>`
-
-**`engram recall <query>`** -- Search memories.
-- `--tiers <tiers>` -- comma-separated (default: all three)
-- `--max-results <n>` (default 10), `--max-tokens <n>`, `--min-confidence <n>`
-
-**`engram forget`** -- Run a forgetting policy via `--policy <type>`.
-- `--ttl-working <ms>`, `--ttl-episodic <ms>`, `--ttl-semantic <ms>` (time_based)
-- `--confidence-threshold <n>` (confidence_based, default 0.3)
-- `--inactive-days <n>` (access_based, default 30)
-- `--target <entity>` (explicit, gdpr)
-
-**`engram stats`** -- Show memory counts, sizes, and averages per tier.
+See [CLI reference](docs/cli.md) for all commands and options.
 
 ## Architecture
 
@@ -270,16 +157,23 @@ engram stats
 └─────────────────────────────────────────┘
 ```
 
-All state lives in a single SQLite file. Tables: `working_memory`, `episodic_memory`, `semantic_memory`, `quarantine`, `audit_log`, `sharing_config`. Full indexing on agent ID, timestamps, visibility, topic, and confidence.
+## Documentation
+
+| Doc | Description |
+|---|---|
+| [API Reference](docs/api.md) | Full method signatures, options, and return types |
+| [CLI Reference](docs/cli.md) | All commands, flags, and examples |
+| [Forgetting Policies](docs/forgetting.md) | Deep dive into each policy type with configuration examples |
+| [Sharing & Visibility](docs/sharing.md) | Cross-agent memory sharing and access control |
+| [Integrity & Quarantine](docs/integrity.md) | Write validation, contradiction detection, quarantine workflow |
 
 ## Development
 
 ```bash
 npm run build      # Compile TypeScript
-npm run dev        # Watch mode
-npm run lint       # Type-check without emit
 npm test           # Run tests (vitest)
-npm run test:watch # Watch mode tests
+npm run dev        # Watch mode
+npm run lint       # Type-check
 ```
 
 ## License
