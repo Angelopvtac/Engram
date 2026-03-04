@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.engram/
+*.db
+*.db-journal
+*.db-wal
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
