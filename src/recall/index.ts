@@ -7,6 +7,8 @@ import type {
   SemanticFact,
   WorkingEntry,
 } from "../types.js";
+import type { EmbeddingProvider } from "../embeddings/index.js";
+import { cosineSimilarity, deserializeEmbedding } from "../embeddings/index.js";
 
 /** Scored memory for ranking */
 interface ScoredMemory {
@@ -19,24 +21,57 @@ interface ScoredMemory {
  * RecallEngine — retrieves relevant memories from all tiers based on a
  * natural language query. Ranks by recency, relevance, confidence, and
  * frequency. Respects configurable budget constraints.
+ *
+ * When an EmbeddingProvider is configured, uses vector cosine similarity
+ * for relevance scoring. Falls back to keyword matching otherwise.
  */
 export class RecallEngine {
   /** Exponential decay half-life in milliseconds (default: 7 days) */
   private recencyHalfLife: number;
+  private embeddingProvider: EmbeddingProvider | null;
 
   constructor(
     private store: MemoryStore,
-    opts?: { recencyHalfLifeMs?: number }
+    opts?: { recencyHalfLifeMs?: number; embeddingProvider?: EmbeddingProvider | null }
   ) {
     this.recencyHalfLife = opts?.recencyHalfLifeMs ?? 7 * 24 * 60 * 60 * 1000;
+    this.embeddingProvider = opts?.embeddingProvider ?? null;
   }
 
   /**
    * Recall memories relevant to a query, ranked and budget-constrained.
+   * Uses vector similarity when embeddings are available, keyword matching otherwise.
+   * @param query Natural language query
+   * @param filters Optional recall filters
+   */
+  async recallAsync(query: string, filters: RecallFilters = {}): Promise<RecallResult> {
+    let queryEmbedding: number[] | null = null;
+    if (this.embeddingProvider && query) {
+      try {
+        queryEmbedding = await this.embeddingProvider.embed(query);
+      } catch {
+        // Fall back to keyword matching on embedding failure
+        queryEmbedding = null;
+      }
+    }
+    return this.recallInternal(query, filters, queryEmbedding);
+  }
+
+  /**
+   * Synchronous recall — uses keyword matching only (no embeddings).
+   * Maintains backward compatibility with existing code.
    * @param query Natural language query
    * @param filters Optional recall filters
    */
   recall(query: string, filters: RecallFilters = {}): RecallResult {
+    return this.recallInternal(query, filters, null);
+  }
+
+  private recallInternal(
+    query: string,
+    filters: RecallFilters,
+    queryEmbedding: number[] | null
+  ): RecallResult {
     const candidates: ScoredMemory[] = [];
     const tiers = filters.tiers ?? ["working", "episodic", "semantic"];
     const keywords = this.extractKeywords(query);
@@ -65,16 +100,21 @@ export class RecallEngine {
         limit: 200,
       });
       for (const ep of episodes) {
-        const relevance = this.keywordScore(
-          `${ep.who} ${ep.what} ${ep.context} ${ep.outcome}`,
-          keywords
-        );
+        const text = `${ep.who} ${ep.what} ${ep.context} ${ep.outcome}`;
+        let relevance: number;
+
+        // Try vector similarity first
+        const embedding = this.getEpisodeEmbedding(ep.id);
+        if (queryEmbedding && embedding) {
+          relevance = Math.max(0, cosineSimilarity(queryEmbedding, embedding));
+        } else {
+          relevance = this.keywordScore(text, keywords);
+        }
+
         candidates.push({
           memory: { tier: "episodic", data: ep },
           score: this.scoreEpisodic(ep, relevance),
-          tokenEstimate: this.estimateTokens(
-            `${ep.who} ${ep.what} ${ep.context} ${ep.outcome}`
-          ),
+          tokenEstimate: this.estimateTokens(text),
         });
       }
     }
@@ -86,10 +126,17 @@ export class RecallEngine {
         limit: 200,
       });
       for (const fact of facts) {
-        const relevance = this.keywordScore(
-          `${fact.topic} ${fact.fact}`,
-          keywords
-        );
+        const text = `${fact.topic} ${fact.fact}`;
+        let relevance: number;
+
+        // Try vector similarity first
+        const embedding = this.getSemanticEmbedding(fact.id);
+        if (queryEmbedding && embedding) {
+          relevance = Math.max(0, cosineSimilarity(queryEmbedding, embedding));
+        } else {
+          relevance = this.keywordScore(text, keywords);
+        }
+
         candidates.push({
           memory: { tier: "semantic", data: fact },
           score: this.scoreSemantic(fact, relevance),
@@ -120,6 +167,32 @@ export class RecallEngine {
       query,
       filters,
     };
+  }
+
+  /** Get stored embedding for an episodic memory, if available */
+  private getEpisodeEmbedding(id: string): number[] | null {
+    try {
+      const row = this.store.db
+        .prepare(`SELECT embedding FROM episodic_memory WHERE id = ? AND embedding IS NOT NULL`)
+        .get(id) as { embedding: Buffer } | undefined;
+      if (!row?.embedding) return null;
+      return deserializeEmbedding(row.embedding);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get stored embedding for a semantic memory, if available */
+  private getSemanticEmbedding(id: string): number[] | null {
+    try {
+      const row = this.store.db
+        .prepare(`SELECT embedding FROM semantic_memory WHERE id = ? AND embedding IS NOT NULL`)
+        .get(id) as { embedding: Buffer } | undefined;
+      if (!row?.embedding) return null;
+      return deserializeEmbedding(row.embedding);
+    } catch {
+      return null;
+    }
   }
 
   /** Score a working memory entry */

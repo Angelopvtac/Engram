@@ -17,18 +17,26 @@
     "README.md"
   ],
   "bin": {
-    "engram": "dist/cli.js"
+    "engram": "dist/cli.js",
+    "engram-mcp": "dist/mcp/server.js",
+    "engram-api": "dist/api/server.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "mcp": "node dist/mcp/server.js",
+    "api": "node dist/api/server.js"
   },
   "dependencies": {
+    "@fastify/swagger": "^9.7.0",
+    "@fastify/swagger-ui": "^5.2.5",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^11.8.1",
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "fastify": "^5.8.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

@@ -154,10 +154,15 @@ const engine = new RecallEngine(store, opts?);
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `recencyHalfLifeMs` | `number` | 604800000 (7 days) | Half-life for exponential recency decay |
+| `embeddingProvider` | `EmbeddingProvider` | `undefined` | Embedding provider for vector search |
 
 ### `engine.recall(query, filters?)`
 
-Searches all specified tiers, scores each candidate, and returns results ranked by composite score within the token budget.
+Synchronous keyword-based search. Searches all specified tiers, scores each candidate, and returns results ranked by composite score within the token budget.
+
+### `engine.recallAsync(query, filters?)`
+
+Async version that uses vector similarity when an `embeddingProvider` is configured. Falls back to keyword matching when no provider is available. **Recommended for REST API and MCP integrations.**
 
 **RecallFilters:**
 
@@ -189,6 +194,59 @@ Each tier uses a different weight distribution:
 | Working | 0.5 | 0.3 | -- | 0.2 |
 | Episodic | 0.4 | 0.35 | -- | 0.25 |
 | Semantic | 0.3 | 0.2 | 0.3 | 0.2 |
+
+---
+
+## EmbeddingProvider
+
+```typescript
+import { createEmbeddingProvider, type EmbeddingProvider } from 'engram';
+```
+
+Pluggable interface for vector embeddings used by RecallEngine.
+
+### Interface
+
+```typescript
+interface EmbeddingProvider {
+  embed(text: string): Promise<number[]>;
+  embedBatch(texts: string[]): Promise<number[][]>;
+  dimensions: number;
+}
+```
+
+### Factory
+
+```typescript
+const provider = createEmbeddingProvider({
+  provider: "openai",      // or "local"
+  apiKey: "sk-...",        // optional, falls back to OPENAI_API_KEY env var
+  model: "text-embedding-3-small",  // optional
+  localDimensions: 128,    // optional, for local provider
+});
+```
+
+### Providers
+
+| Provider | Class | Dimensions | Dependencies |
+|---|---|---|---|
+| OpenAI | `OpenAIEmbeddingProvider` | 1536 | `OPENAI_API_KEY` |
+| Local | `LocalEmbeddingProvider` | 128 (configurable) | None |
+
+The local provider uses TF-IDF-style character n-gram hashing. It produces deterministic embeddings suitable for testing and offline operation, but quality is lower than neural embeddings.
+
+### Utility Functions
+
+```typescript
+import { cosineSimilarity, serializeEmbedding, deserializeEmbedding } from 'engram';
+
+// Compare two vectors (returns -1 to 1)
+const score = cosineSimilarity(vecA, vecB);
+
+// Store/retrieve embeddings from SQLite BLOBs
+const blob = serializeEmbedding(vec);
+const vec = deserializeEmbedding(blob);
+```
 
 ---
 
@@ -247,3 +305,132 @@ const sharing = new SharingManager(store);
 ```
 
 See [Sharing & Visibility](sharing.md) for detailed documentation.
+
+---
+
+## REST API
+
+The REST API exposes all Engram operations over HTTP via Fastify. Start it with:
+
+```bash
+engram-api --db ~/.engram/memory.db --port 3847
+```
+
+Or programmatically:
+
+```typescript
+import { createApiServer } from 'engram';
+
+const app = await createApiServer({ dbPath: './memory.db', apiKey: 'secret' });
+await app.listen({ port: 3847, host: '127.0.0.1' });
+```
+
+### Authentication
+
+Set `ENGRAM_API_KEY` env var or pass `--api-key` flag. When set, all endpoints except `/api/v1/health` and `/docs` require a `Authorization: Bearer <key>` header.
+
+### Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/v1/health` | Health check (no auth required) |
+| `POST` | `/api/v1/store` | Store a memory (working, episodic, or semantic) |
+| `POST` | `/api/v1/recall` | Recall memories by natural language query |
+| `POST` | `/api/v1/forget` | Run a forgetting policy |
+| `GET` | `/api/v1/stats` | Get memory statistics |
+| `POST` | `/api/v1/share` | Share a memory |
+| `POST` | `/api/v1/revoke` | Revoke sharing on a memory |
+| `GET` | `/api/v1/working/:agentId` | List working memory entries |
+| `GET` | `/api/v1/working/:agentId/:key` | Get a working memory entry |
+| `PUT` | `/api/v1/working/:agentId/:key` | Set a working memory entry |
+| `DELETE` | `/api/v1/working/:agentId/:key` | Delete a working memory entry |
+
+### Store (`POST /api/v1/store`)
+
+```json
+{
+  "tier": "episodic",
+  "agentId": "agent-1",
+  "who": "user",
+  "what": "Asked about deployment",
+  "context": "slack",
+  "outcome": "Provided ETA"
+}
+```
+
+### Recall (`POST /api/v1/recall`)
+
+```json
+{
+  "query": "deployment schedule",
+  "agentId": "agent-1",
+  "tiers": ["episodic", "semantic"],
+  "maxResults": 10,
+  "maxTokens": 2000
+}
+```
+
+### OpenAPI Docs
+
+Interactive Swagger documentation is available at `http://localhost:3847/docs` when the server is running.
+
+---
+
+## MCP Server
+
+The MCP server exposes Engram operations as MCP tools via stdio transport, compatible with Claude Code and other MCP clients.
+
+```bash
+engram-mcp --db ~/.engram/memory.db
+```
+
+### Configuration
+
+Add to your MCP client config (e.g., Claude Code's `mcp_servers.json`):
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "engram-mcp",
+      "args": ["--db", "~/.engram/memory.db"]
+    }
+  }
+}
+```
+
+Environment variable `ENGRAM_DB_PATH` can be used instead of `--db`.
+
+### Tools
+
+| Tool | Description |
+|---|---|
+| `engram_store` | Store a memory (working, episodic, or semantic) |
+| `engram_recall` | Recall memories by natural language query |
+| `engram_forget` | Run a forgetting policy |
+| `engram_stats` | Get memory statistics |
+| `engram_share` | Share a memory |
+| `engram_working_get` | Get a working memory entry |
+| `engram_working_set` | Set a working memory entry |
+| `engram_working_list` | List working memory entries |
+
+---
+
+## Python SDK
+
+See the [Python SDK README](../python/README.md) for full documentation.
+
+```python
+from engram import EngramClient, AsyncEngramClient
+
+# Sync
+client = EngramClient(base_url="http://localhost:3847")
+client.store(tier="episodic", agent_id="agent-1", what="something happened")
+results = client.recall("what happened")
+
+# Async
+async with AsyncEngramClient() as client:
+    results = await client.recall("what happened")
+```
+
+The Python SDK wraps the REST API. Start the REST API server before using the SDK.

@@ -92,4 +92,42 @@ export function initSchema(db: Database.Database): void {
       default_semantic_visibility TEXT NOT NULL DEFAULT 'private'
     );
   `);
+
+  // Backward-compatible schema migrations: add embedding columns if they don't exist
+  addColumnIfNotExists(db, "episodic_memory", "embedding", "BLOB");
+  addColumnIfNotExists(db, "semantic_memory", "embedding", "BLOB");
+}
+
+/** Known tables and columns that can be migrated. Inputs are validated against this allowlist. */
+const VALID_MIGRATIONS: Record<string, Set<string>> = {
+  episodic_memory: new Set(["embedding"]),
+  semantic_memory: new Set(["embedding"]),
+};
+
+const VALID_TYPES = new Set(["BLOB", "TEXT", "INTEGER", "REAL"]);
+
+/**
+ * Add a column to a table if it doesn't already exist.
+ * SAFETY: table, column, and type are validated against allowlists to prevent SQL injection.
+ */
+function addColumnIfNotExists(
+  db: Database.Database,
+  table: string,
+  column: string,
+  type: string
+): void {
+  if (!VALID_MIGRATIONS[table]?.has(column)) {
+    throw new Error(`Migration not allowed: ${table}.${column}`);
+  }
+  if (!VALID_TYPES.has(type)) {
+    throw new Error(`Invalid column type: ${type}`);
+  }
+
+  const columns = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as Array<{ name: string }>;
+  const exists = columns.some((c) => c.name === column);
+  if (!exists) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
